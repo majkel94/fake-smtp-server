@@ -2,6 +2,7 @@
 const SMTPServer = require('smtp-server').SMTPServer;
 const simpleParser = require('mailparser').simpleParser;
 const express = require("express");
+const bodyParser = require('body-parser')
 const basicAuth = require('express-basic-auth');
 const path = require("path");
 const _ = require("lodash");
@@ -33,6 +34,7 @@ if (config.auth) {
 }
 
 const mails = [];
+const responseRules = {};
 
 const server = new SMTPServer({
   authOptional: true,
@@ -44,6 +46,25 @@ const server = new SMTPServer({
       cb(new Error('Invalid email from: ' + address.address));
     }
   },
+  onRcptTo(address, session, callback) {
+    let err;
+
+    let mailTo = address.address.toLowerCase()
+    if (mailTo in responseRules) {
+        responseRule = responseRules[mailTo]
+        err = new Error(responseRule.message);
+        err.responseCode = responseRule.responseCode;
+
+        cli.info('Applying rule ' + responseRule.responseCode + ' ' + responseRule.message + ' for: ' + mailTo)
+        responseRule.applyTimes -= 1
+        if (responseRule.applyTimes == 0) {
+            delete responseRules[mailTo]
+         }
+        return callback(err);
+    }
+
+    callback();
+},
   onAuth(auth, session, callback) {
     cli.info('SMTP login for user: ' + auth.username);
     callback(null, {
@@ -112,6 +133,7 @@ if (users) {
 const buildDir = path.join(__dirname, 'build');
 
 app.use(express.static(buildDir));
+app.use(bodyParser.json())
 
 function emailFilter(filter) {
   return email => {
@@ -145,6 +167,21 @@ app.delete('/api/emails', (req, res) => {
     mails.length = 0;
     res.send();
 });
+
+app.route('/api/rules')
+  .get(function (req, res) {
+    res.json(responseRules)
+  })
+  .delete(function (req, res) {
+    responseRules = {};
+    res.send();
+  })
+  .put(function (req, res) {
+    var newRule = {responseCode:req.body.responseCode, message:req.body.message, applyTimes:req.body.applyTimes}
+    responseRules[req.body.mailTo.toLowerCase()] = newRule
+    cli.info('New response rule: ' + JSON.stringify(req.body))
+    res.status(202).json(req.body)
+  })
 
 app.listen(config['http-port'], config['http-ip'], () => {
   cli.info("HTTP server listening on http://" + config['http-ip'] +  ":" + config['http-port']);
